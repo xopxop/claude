@@ -31,16 +31,22 @@ Implement location-based JWT authorization for a specific controller in an ASP.N
 
 **CRITICAL**: Always analyze the controller first to determine if changes are actually needed:
 
-1. **Check if controller already has appropriate authorization**:
+1. **Check if controller is shared between teams**:
+   - Look for controllers with both `[Route(StoreOtgPath)]` and `[Route(PlanogramEditorPath)]` attributes
+   - These are shared controllers → **DO NOT MODIFY SHARED CONTROLLERS**
+   - Example: PlanogramInteractionController has both routes → **DO NOTHING**
+
+2. **Check if controller already has appropriate authorization**:
    - If endpoints already have `[Authorize]` attributes with proper scopes → **DO NOTHING**
    - If endpoints already have location-based authorization → **DO NOTHING**
 
-2. **Determine if location-based authorization is needed**:
+3. **Determine if location-based authorization is needed**:
    - Are the endpoints location-specific (e.g., store-specific data)?
    - Do they need to restrict access by location codes?
    - If NO → **DO NOT ADD LOCATION-BASED AUTHORIZATION**
 
-3. **Only proceed if**:
+4. **Only proceed if**:
+   - Controller is NOT shared between teams AND
    - Endpoints need location-based authorization AND
    - They don't already have it
 
@@ -548,7 +554,14 @@ If after analyzing the controller you determine that no changes are needed, repo
 
 ### Examples of when to do nothing:
 
-1. **Controller already has appropriate scope-based authorization**:
+1. **Controller is shared between teams**:
+   ```
+   Analysis: PlanogramInteractionController has both [Route(StoreOtgPath)] and [Route(PlanogramEditorPath)] attributes.
+   This indicates it's shared between teams and should not be modified.
+   Result: No changes needed.
+   ```
+
+2. **Controller already has appropriate scope-based authorization**:
    ```
    Analysis: FixtureLabelController already has proper authorization:
    - [Authorize(Policy = Scope.Planogram.PlanogramEdit)]
@@ -557,13 +570,13 @@ If after analyzing the controller you determine that no changes are needed, repo
    Result: No changes needed.
    ```
 
-2. **Controller already has location-based authorization**:
+3. **Controller already has location-based authorization**:
    ```
    Analysis: AuditLogsController already has location-based authorization implemented.
    Result: No changes needed.
    ```
 
-3. **Controller doesn't need location-based authorization**:
+4. **Controller doesn't need location-based authorization**:
    ```
    Analysis: Endpoints operate on account-scoped data, not location-specific data.
    Result: Location-based authorization not appropriate for this controller.
