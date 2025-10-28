@@ -220,7 +220,7 @@ public async Task<IActionResult> GetData(
 
 1. **Create Custom Authorization Requirement and Handler**:
 
-**Example: Request Body Handler**:
+**Example: Request Body Handler (Using Latest C# Patterns)**:
 ```csharp
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -231,11 +231,8 @@ using System.Text.Json;
 
 namespace YourProject.Security.Authorization;
 
-// Define the requirement - Note the "RequestBody" suffix
-public class AuditLogRequestBodyAuthorizationRequirement : LocationAuthorizationRequirementBase
-{
-    public AuditLogRequestBodyAuthorizationRequirement() : base("requestBody") { }
-}
+// Define the requirement - Note the "RequestBody" suffix - Use primary constructor
+public class AuditLogRequestBodyAuthorizationRequirement() : LocationAuthorizationRequirementBase("requestBody");
 
 // Implement the handler - Note the "RequestBody" suffix
 public class AuditLogRequestBodyAuthorizationHandler(IHttpContextAccessor httpContextAccessor)
@@ -250,15 +247,13 @@ public class AuditLogRequestBodyAuthorizationHandler(IHttpContextAccessor httpCo
         httpContext.Request.EnableBuffering();
         httpContext.Request.Body.Position = 0;
 
-        using var reader = new StreamReader(httpContext.Request.Body, leaveOpen: true);
-        var requestBodyTask = reader.ReadToEndAsync();
-        requestBodyTask.Wait(); // Since this is called from synchronous method
-        var requestBody = requestBodyTask.Result;
+        var reader = new StreamReader(httpContext.Request.Body, leaveOpen: true);
+        var requestBody = reader.ReadToEnd();
         httpContext.Request.Body.Position = 0;
 
         if (string.IsNullOrWhiteSpace(requestBody))
         {
-            return new HashSet<string>(); // Security: Return empty set instead of wildcard
+            return []; // Security: Return empty set instead of wildcard
         }
 
         var auditLogRequest = JsonSerializer.Deserialize<AuditLogRequest>(requestBody, new JsonSerializerOptions
@@ -271,7 +266,7 @@ public class AuditLogRequestBodyAuthorizationHandler(IHttpContextAccessor httpCo
             return [auditLogRequest.LocationCode];
         }
 
-        return new HashSet<string>(); // Security: Return empty set instead of wildcard
+        return []; // Security: Return empty set instead of wildcard
     }
 }
 ```
@@ -310,6 +305,113 @@ public async Task<IActionResult> SaveAuditLog(
 - Only add/update tests for the specific endpoints you modified to include location-based authorization
 - Do NOT touch existing tests for other endpoints that were not modified
 - Update your existing authorization test files to include location-based authorization tests using the proven RELEX pattern
+- **Restructure tests to have separate theory data by scope and individual test methods for each endpoint**
+
+### 3.2: Test File Structure Requirements
+
+**MANDATORY STRUCTURE**: Tests must be organized with:
+1. **Scope-specific theory data methods** - Create separate `TheoryData` methods based on the authorization policy requirements
+2. **Individual test methods for each endpoint** - Each endpoint gets its own test method, not grouped tests
+
+**Example Structure**:
+```csharp
+#region Theory Data - Scope-Based Authorization Tests
+
+// For endpoints requiring PlanogramAccess policy (PlanogramView OR PlanogramEdit)
+public static TheoryData<string[]?, string[]?, string[], HttpStatusCode[]> PlanogramAccessScopeTestData()
+{
+    return new TheoryData<string[]?, string[]?, string[], HttpStatusCode[]>
+    {
+        // 401, 403, and Authorized test cases for PlanogramAccess endpoints
+    };
+}
+
+// For endpoints requiring PlanogramEdit policy (PlanogramEdit only)
+public static TheoryData<string[]?, string[]?, string[], HttpStatusCode[]> PlanogramEditScopeTestData()
+{
+    return new TheoryData<string[]?, string[]?, string[], HttpStatusCode[]>
+    {
+        // 401, 403, and Authorized test cases for PlanogramEdit endpoints
+    };
+}
+
+// For endpoints with scope-only authorization (no location-based authorization)
+public static TheoryData<string[]?, HttpStatusCode[]> PlanogramAccessScopeOnlyTestData()
+{
+    return new TheoryData<string[]?, HttpStatusCode[]>
+    {
+        // 401, 403, and Authorized test cases for scope-only endpoints
+    };
+}
+
+#endregion
+
+#region Authorization Tests
+
+// Individual test method for each endpoint
+[Theory]
+[MemberData(nameof(PlanogramAccessScopeTestData))]
+public async Task GetByLocationCode_LocationBasedAuthorization(string[]? userLocationCodesClaims, string[]? userScopes, string[] locationCodesRequested, HttpStatusCode[] expectedStatusCodes)
+{
+    // Test implementation for GET /api/controller/{locationCode} endpoint
+}
+
+[Theory]
+[MemberData(nameof(PlanogramEditScopeTestData))]
+public async Task Post_LocationBasedAuthorization(string[]? userLocationCodesClaims, string[]? userScopes, string[] locationCodesRequested, HttpStatusCode[] expectedStatusCodes)
+{
+    // Test implementation for POST /api/controller endpoint
+}
+
+[Theory]
+[MemberData(nameof(PlanogramAccessScopeOnlyTestData))]
+public async Task GetSettings_ScopeBasedAuthorization(string[]? userScopes, HttpStatusCode[] expectedStatusCodes)
+{
+    // Test implementation for scope-only endpoint
+}
+
+#endregion
+```
+
+### 3.3: Request Body Testing for POST Endpoints
+
+For POST endpoints with request body authorization, create multiple items using the `locationCodesRequested` parameter:
+
+```csharp
+[Theory]
+[MemberData(nameof(PlanogramEditScopeTestData))]
+public async Task Post_LocationBasedAuthorization(string[]? userLocationCodesClaims, string[]? userScopes, string[] locationCodesRequested, HttpStatusCode[] expectedStatusCodes)
+{
+    // Arrange
+    var client = _factory.CreateClient();
+    if (userLocationCodesClaims is not null && userScopes is not null)
+    {
+        var jwtToken = JwtTokenHelper.CustomJwtToken(string.Join(",", userLocationCodesClaims), userScopes);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", jwtToken);
+    }
+
+    // Create request body with multiple items using location codes from test data
+    var requestModel = locationCodesRequested.Select(locationCode => new
+    {
+        ContentUcr = "123e4567-e89b-12d3-a456-426614174000", // Same for all items
+        CategoryCode = "CAT001", // Same for all items
+        LocationCode = locationCode // Different for each item from test data
+    }).ToArray();
+    var requestBody = new StringContent(JsonSerializer.Serialize(requestModel), Encoding.UTF8, "application/json");
+
+    // Act
+    var response = await client.PostAsync(BaseControllerUrl, requestBody);
+
+    // Assert
+    Assert.Contains(response.StatusCode, expectedStatusCodes);
+}
+```
+
+**Key Points**:
+- Use `locationCodesRequested.Select()` to create multiple request body items
+- Keep `ContentUcr`, `CategoryCode`, etc. the same for all items
+- Only vary the `LocationCode` using values from `locationCodesRequested`
+- Ensure test data includes multiple location codes: `["LOC001", "LOC002", "LOC003"]`
 
 ### Implementation Pattern
 
@@ -359,6 +461,39 @@ public class YourControllerAuthorizationTests(ApiFactory factory) : IClassFixtur
             { ["*"], [Scope.Planogram.PlanogramView], ["001", "002"], AuthorizationTestHelper.AuthorizedStatusCodes },
             { ["*"], [Scope.Planogram.PlanogramEdit], ["001", "002"], AuthorizationTestHelper.AuthorizedStatusCodes },
             { ["001", "002"], [Scope.Planogram.PlanogramView, Scope.Planogram.PlanogramEdit], ["001", "002"], AuthorizationTestHelper.AuthorizedStatusCodes },
+        };
+    }
+
+    // Data for parameterized tests for endpoints with SettingsReadAccess policy
+    // UserLocationCodesClaims, UserScopes, LocationCodesRequested, ExpectedStatusCodes
+    public static TheoryData<string[]?, string[]?, string[], HttpStatusCode[]> SettingsReadAccessScopeTestData()
+    {
+        return new TheoryData<string[]?, string[]?, string[], HttpStatusCode[]>
+        {
+            // 401 Unauthorized
+            { null, null, ["001", "002"], [HttpStatusCode.Unauthorized] },
+
+            // 403 Forbidden
+            // No user scopes & no location codes claim
+            { [], [], ["001", "002"], [HttpStatusCode.Forbidden] },
+            // Has SettingsReadAccess scope only (no location codes claim)
+            { [""], [Scope.Administration.AccountSettingsView], ["001", "002"], [HttpStatusCode.Forbidden] },
+            { [""], [Scope.Planogram.PlanogramView], ["001", "002"], [HttpStatusCode.Forbidden] },
+            { [""], [Scope.Planogram.PlanogramEdit], ["001", "002"], [HttpStatusCode.Forbidden] },
+            // Has location codes claim only (no scope)
+            { ["*"], [], ["001", "002"], [HttpStatusCode.Forbidden] },
+            { ["001", "002"], [], ["001", "002"], [HttpStatusCode.Forbidden] },
+            // Has SettingsReadAccess scope & location codes but mismatched location codes
+            { ["001"], [Scope.Administration.AccountSettingsView], ["002"], [HttpStatusCode.Forbidden] },
+            { ["001"], [Scope.Planogram.PlanogramView], ["002"], [HttpStatusCode.Forbidden] },
+
+            // Authorized cases
+            { ["*"], [Scope.Administration.AccountSettingsView], ["001"], AuthorizationTestHelper.AuthorizedStatusCodes },
+            { ["*"], [Scope.Planogram.PlanogramView], ["001"], AuthorizationTestHelper.AuthorizedStatusCodes },
+            { ["*"], [Scope.Planogram.PlanogramEdit], ["001"], AuthorizationTestHelper.AuthorizedStatusCodes },
+            { ["001", "002"], [Scope.Administration.AccountSettingsView], ["001"], AuthorizationTestHelper.AuthorizedStatusCodes },
+            { ["001", "002"], [Scope.Planogram.PlanogramView], ["002"], AuthorizationTestHelper.AuthorizedStatusCodes },
+            { ["001", "002"], [Scope.Planogram.PlanogramEdit], ["001"], AuthorizationTestHelper.AuthorizedStatusCodes },
         };
     }
 
@@ -419,12 +554,15 @@ public class YourControllerAuthorizationTests(ApiFactory factory) : IClassFixtur
 #### Non-Location-Based Endpoints (Scope-Only Authorization)
 For existing endpoints that only require scopes and don't need location authorization:
 
+**CRITICAL**: Use appropriate test data based on the endpoint's authorization policy. Here are the standard patterns:
+
+##### Pattern 1: PlanogramAccess Policy (Allows PlanogramView OR PlanogramEdit)
 ```csharp
-#region Non-Location-Based Endpoint Tests
+#region Non-Location-Based Endpoint Tests - PlanogramAccess Policy
 
 // Data for parameterized tests
 // UserScopes, ExpectedStatusCodes
-public static TheoryData<string[]?, HttpStatusCode[]> PlanogramSharedAccessScopeTestData()
+public static TheoryData<string[]?, HttpStatusCode[]> PlanogramAccessScopeOnlyTestData()
 {
     return new TheoryData<string[]?, HttpStatusCode[]>
     {
@@ -434,19 +572,22 @@ public static TheoryData<string[]?, HttpStatusCode[]> PlanogramSharedAccessScope
         // 403 Forbidden
         // No user scopes
         { [], [HttpStatusCode.Forbidden] },
-        // Has other scopes (not allowed for PlanogramSharedAccess endpoints)
+        // Has wrong scopes (not allowed for PlanogramAccess endpoints)
         { [Scope.Administration.AccountSettingsView], [HttpStatusCode.Forbidden] },
 
-        // Authorized cases - Has required PlanogramSharedAccess scopes
+        // Authorized cases - Has required PlanogramAccess scopes
         { [Scope.Planogram.PlanogramView], AuthorizationTestHelper.AuthorizedStatusCodes },
         { [Scope.Planogram.PlanogramEdit], AuthorizationTestHelper.AuthorizedStatusCodes },
         { [Scope.Planogram.PlanogramView, Scope.Planogram.PlanogramEdit], AuthorizationTestHelper.AuthorizedStatusCodes },
     };
 }
+```
 
+##### Pattern 2: PlanogramEdit Policy (Requires PlanogramEdit scope only)
+```csharp
 // Data for parameterized tests
 // UserScopes, ExpectedStatusCodes
-public static TheoryData<string[]?, HttpStatusCode[]> PlanogramEditScopeTestData()
+public static TheoryData<string[]?, HttpStatusCode[]> PlanogramEditScopeOnlyTestData()
 {
     return new TheoryData<string[]?, HttpStatusCode[]>
     {
@@ -458,7 +599,7 @@ public static TheoryData<string[]?, HttpStatusCode[]> PlanogramEditScopeTestData
         { [], [HttpStatusCode.Forbidden] },
         // Has view scope only (not sufficient for edit operations)
         { [Scope.Planogram.PlanogramView], [HttpStatusCode.Forbidden] },
-        // Has other scopes
+        // Has wrong scopes
         { [Scope.Administration.AccountSettingsView], [HttpStatusCode.Forbidden] },
 
         // Authorized cases - Has required PlanogramEdit scope
@@ -466,6 +607,103 @@ public static TheoryData<string[]?, HttpStatusCode[]> PlanogramEditScopeTestData
         { [Scope.Planogram.PlanogramView, Scope.Planogram.PlanogramEdit], AuthorizationTestHelper.AuthorizedStatusCodes },
     };
 }
+```
+
+##### Pattern 3: SettingsReadAccess Policy (Allows AccountSettingsView OR PlanogramView OR PlanogramEdit)
+```csharp
+// Data for parameterized tests
+// UserScopes, ExpectedStatusCodes
+public static TheoryData<string[]?, HttpStatusCode[]> SettingsReadAccessScopeOnlyTestData()
+{
+    return new TheoryData<string[]?, HttpStatusCode[]>
+    {
+        // 401 Unauthorized
+        { null, [HttpStatusCode.Unauthorized] },
+
+        // 403 Forbidden
+        // No user scopes
+        { [], [HttpStatusCode.Forbidden] },
+        // Has wrong scopes (not allowed for SettingsReadAccess endpoints)
+        { [Scope.SomeOther.Scope], [HttpStatusCode.Forbidden] },
+
+        // Authorized cases - Has required SettingsReadAccess scopes
+        { [Scope.Administration.AccountSettingsView], AuthorizationTestHelper.AuthorizedStatusCodes },
+        { [Scope.Planogram.PlanogramView], AuthorizationTestHelper.AuthorizedStatusCodes },
+        { [Scope.Planogram.PlanogramEdit], AuthorizationTestHelper.AuthorizedStatusCodes },
+        { [Scope.Administration.AccountSettingsView, Scope.Planogram.PlanogramView], AuthorizationTestHelper.AuthorizedStatusCodes },
+        { [Scope.Planogram.PlanogramView, Scope.Planogram.PlanogramEdit], AuthorizationTestHelper.AuthorizedStatusCodes },
+    };
+}
+```
+
+##### Pattern 4: PlanogramSharedAccess Policy (Allows PlanogramView OR PlanogramEdit OR PlanogramDeliverySpaceView)
+```csharp
+// Data for parameterized tests
+// UserScopes, ExpectedStatusCodes
+public static TheoryData<string[]?, HttpStatusCode[]> PlanogramSharedAccessScopeOnlyTestData()
+{
+    return new TheoryData<string[]?, HttpStatusCode[]>
+    {
+        // 401 Unauthorized
+        { null, [HttpStatusCode.Unauthorized] },
+
+        // 403 Forbidden
+        // No user scopes
+        { [], [HttpStatusCode.Forbidden] },
+        // Has wrong scopes (not allowed for PlanogramSharedAccess endpoints)
+        { [Scope.Administration.AccountSettingsView], [HttpStatusCode.Forbidden] },
+
+        // Authorized cases - Has required PlanogramSharedAccess scopes
+        { [Scope.Planogram.PlanogramView], AuthorizationTestHelper.AuthorizedStatusCodes },
+        { [Scope.Planogram.PlanogramEdit], AuthorizationTestHelper.AuthorizedStatusCodes },
+        { [Scope.PlanogramDeliverySpaceApi.PlanogramDeliverySpaceView], AuthorizationTestHelper.AuthorizedStatusCodes },
+        { [Scope.Planogram.PlanogramView, Scope.Planogram.PlanogramEdit], AuthorizationTestHelper.AuthorizedStatusCodes },
+    };
+}
+```
+
+##### Test Method Examples for Non-Location-Based Endpoints
+```csharp
+[Theory]
+[MemberData(nameof(PlanogramAccessScopeOnlyTestData))]
+public async Task GetYourEndpoint_ScopeOnlyAuthorization(string[]? userScopes, HttpStatusCode[] expectedStatusCodes)
+{
+    // Arrange
+    var client = _factory.CreateClient();
+    if (userScopes is not null)
+    {
+        var jwtToken = JwtTokenHelper.CustomJwtToken("", userScopes);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", jwtToken);
+    }
+
+    // Act
+    var response = await client.GetAsync("your-get-endpoint-url");
+
+    // Assert
+    Assert.Contains(response.StatusCode, expectedStatusCodes);
+}
+
+[Theory]
+[MemberData(nameof(PlanogramEditScopeOnlyTestData))]
+public async Task PostYourEndpoint_ScopeOnlyAuthorization(string[]? userScopes, HttpStatusCode[] expectedStatusCodes)
+{
+    // Arrange
+    var client = _factory.CreateClient();
+    if (userScopes is not null)
+    {
+        var jwtToken = JwtTokenHelper.CustomJwtToken("", userScopes);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", jwtToken);
+    }
+
+    // Act
+    var response = await client.PostAsync("your-post-endpoint-url", new StringContent("your-request-body", Encoding.UTF8, "application/json"));
+
+    // Assert
+    Assert.Contains(response.StatusCode, expectedStatusCodes);
+}
+
+#endregion
+```
 
 [Theory]
 [MemberData(nameof(PlanogramSharedAccessScopeTestData))]
@@ -616,7 +854,51 @@ Before completing implementation, verify:
 - [ ] Test class uses `[Trait("Controller", "YourController")]` attribute
 - [ ] Tests use `ApiFactory` and `AuthorizedStatusCodes` for assertions
 
-## Step 6: Common Issues
+## Step 6: Testing Configuration - Synchronous IO Fix
+
+**CRITICAL FIX**: If you're using synchronous stream reading in authorization handlers (like the modernized pattern with `reader.ReadToEnd()`), you must configure your test `ApiFactory` to allow synchronous IO operations.
+
+### Update Your ApiFactory.cs
+
+Add this configuration to your test `ApiFactory`:
+
+```csharp
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
+using YourProject.Security.Authorization;
+
+namespace YourProject.Integration.Tests.Authorization;
+
+public class ApiFactory : WebApplicationFactory<Program>
+{
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseEnvironment("Testing");
+
+        builder.ConfigureServices(services =>
+        {
+            // CRITICAL: Configure TestHost to allow synchronous IO for authorization handlers
+            services.Configure<TestServerOptions>(options =>
+            {
+                options.AllowSynchronousIO = true;
+            });
+
+            // Register your custom authorization handlers for testing
+            services.AddScoped<YourControllerRequestBodyAuthorizationHandler>();
+            // ... other handler registrations
+        });
+    }
+}
+```
+
+**Why this is needed**: The modernized authorization handlers use synchronous `reader.ReadToEnd()` instead of async `reader.ReadToEndAsync()`. ASP.NET Core test server disallows synchronous IO by default, causing tests to fail with `InvalidOperationException: Synchronous operations are disallowed`.
+
+**Required using statement**: Make sure to add `using Microsoft.AspNetCore.TestHost;` for `TestServerOptions`.
+
+## Step 7: Common Issues
 
 ### Custom Handler Issues
 - **Handler not executing**: Ensure handler is registered as `IAuthorizationHandler` in Startup.cs
