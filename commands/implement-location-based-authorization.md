@@ -4,6 +4,8 @@
 
 Implement location-based JWT authorization for a specific controller in an ASP.NET Core microservice following RELEX patterns. This command provides step-by-step instructions for setting up location-based authentication policies and comprehensive testing for the specified controller.
 
+**IMPORTANT**: This command should ONLY be used when endpoints actually need location-based authorization added or modified. If the controller already has appropriate authorization (scope-based or location-based), no changes should be made.
+
 ## Usage
 
 ```bash
@@ -22,8 +24,25 @@ Implement location-based JWT authorization for a specific controller in an ASP.N
 - ASP.NET Core Web API project
 - Access to RELEX NuGet packages
 - Understanding of JWT token-based authentication
-- Existing controller that needs authorization added
+- Existing controller that needs location-based authorization added (not just any authorization)
 - Familiarity with ASP.NET Core authorization policies
+
+## Before Starting
+
+**CRITICAL**: Always analyze the controller first to determine if changes are actually needed:
+
+1. **Check if controller already has appropriate authorization**:
+   - If endpoints already have `[Authorize]` attributes with proper scopes → **DO NOTHING**
+   - If endpoints already have location-based authorization → **DO NOTHING**
+
+2. **Determine if location-based authorization is needed**:
+   - Are the endpoints location-specific (e.g., store-specific data)?
+   - Do they need to restrict access by location codes?
+   - If NO → **DO NOT ADD LOCATION-BASED AUTHORIZATION**
+
+3. **Only proceed if**:
+   - Endpoints need location-based authorization AND
+   - They don't already have it
 
 ## Decision Tree
 
@@ -522,3 +541,32 @@ Before completing implementation, verify:
 | Case 3: Custom Handler | Complex parsing (arrays, comma-separated, request body) | High | Yes (handler class) |
 
 **Best Practice**: Always start with the decision tree. Refactor to use Case 1 unless external dependencies prevent it.
+
+## When No Changes Are Needed
+
+If after analyzing the controller you determine that no changes are needed, report this clearly:
+
+### Examples of when to do nothing:
+
+1. **Controller already has appropriate scope-based authorization**:
+   ```
+   Analysis: FixtureLabelController already has proper authorization:
+   - [Authorize(Policy = Scope.Planogram.PlanogramEdit)]
+   - [Authorize(Policy = "PlanogramAccess")]
+   - Tests already exist and are working correctly
+   Result: No changes needed.
+   ```
+
+2. **Controller already has location-based authorization**:
+   ```
+   Analysis: AuditLogsController already has location-based authorization implemented.
+   Result: No changes needed.
+   ```
+
+3. **Controller doesn't need location-based authorization**:
+   ```
+   Analysis: Endpoints operate on account-scoped data, not location-specific data.
+   Result: Location-based authorization not appropriate for this controller.
+   ```
+
+**CRITICAL RULE**: Only modify files when endpoints actually need location-based authorization added or modified.
