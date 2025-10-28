@@ -31,10 +31,18 @@ Implement location-based JWT authorization for a specific controller in an ASP.N
 
 **CRITICAL**: Always analyze the controller first to determine if changes are actually needed:
 
-1. **Check if controller is shared between teams**:
-   - Look for controllers with both `[Route(StoreOtgPath)]` and `[Route(PlanogramEditorPath)]` attributes
-   - These are shared controllers → **DO NOT MODIFY SHARED CONTROLLERS**
-   - Example: PlanogramInteractionController has both routes → **DO NOTHING**
+1. **⚠️ MANDATORY FIRST CHECK - SHARED CONTROLLERS/ENDPOINTS ⚠️**:
+
+   **DO NOT IMPLEMENT LOCATION-BASED AUTHORIZATION WHEN:**
+   - **Controller is shared between teams** (has both `[Route(StoreOtgPath)]` and `[Route(PlanogramEditorPath)]` attributes)
+   - **OR individual endpoints are shared between teams** (even in non-shared controllers)
+
+   **Examples of what NOT to modify**:
+   - HighlightsController → Has both route attributes → **DO NOTHING**
+   - PlanogramInteractionController → Has both route attributes → **DO NOTHING**
+   - Any endpoint accessible via both route paths → **DO NOTHING**
+
+   **Why this is critical**: Shared resources serve multiple teams. Modifying them breaks functionality for one or both teams.
 
 2. **Check if controller already has appropriate authorization**:
    - If endpoints already have `[Authorize]` attributes with proper scopes → **DO NOTHING**
@@ -45,8 +53,9 @@ Implement location-based JWT authorization for a specific controller in an ASP.N
    - Do they need to restrict access by location codes?
    - If NO → **DO NOT ADD LOCATION-BASED AUTHORIZATION**
 
-4. **Only proceed if**:
+4. **Only proceed if ALL conditions are met**:
    - Controller is NOT shared between teams AND
+   - Individual endpoints are NOT shared between teams AND
    - Endpoints need location-based authorization AND
    - They don't already have it
 
@@ -407,75 +416,155 @@ public class YourControllerAuthorizationTests(ApiFactory factory) : IClassFixtur
 
 **IMPORTANT**: Use different test data structures based on endpoint authorization type:
 
-#### Scope-Only Endpoints (No Location Authorization)
-For endpoints that only require scopes (e.g., GET all resources):
+#### Non-Location-Based Endpoints (Scope-Only Authorization)
+For existing endpoints that only require scopes and don't need location authorization:
 
 ```csharp
-// Use simplified TheoryData structure
-public static TheoryData<string[]?, HttpStatusCode[]> ScopeOnlyTestData()
+#region Non-Location-Based Endpoint Tests
+
+// Data for parameterized tests
+// UserScopes, ExpectedStatusCodes
+public static TheoryData<string[]?, HttpStatusCode[]> PlanogramSharedAccessScopeTestData()
 {
     return new TheoryData<string[]?, HttpStatusCode[]>
     {
-        { null, [HttpStatusCode.Unauthorized] }, // No token
-        { [], [HttpStatusCode.Forbidden] },      // No scopes
-        { [RequiredScope], AuthorizationTestHelper.AuthorizedStatusCodes }, // Has required scope
+        // 401 Unauthorized
+        { null, [HttpStatusCode.Unauthorized] },
+
+        // 403 Forbidden
+        // No user scopes
+        { [], [HttpStatusCode.Forbidden] },
+        // Has other scopes (not allowed for PlanogramSharedAccess endpoints)
+        { [Scope.Administration.AccountSettingsView], [HttpStatusCode.Forbidden] },
+
+        // Authorized cases - Has required PlanogramSharedAccess scopes
+        { [Scope.Planogram.PlanogramView], AuthorizationTestHelper.AuthorizedStatusCodes },
+        { [Scope.Planogram.PlanogramEdit], AuthorizationTestHelper.AuthorizedStatusCodes },
+        { [Scope.Planogram.PlanogramView, Scope.Planogram.PlanogramEdit], AuthorizationTestHelper.AuthorizedStatusCodes },
+    };
+}
+
+// Data for parameterized tests
+// UserScopes, ExpectedStatusCodes
+public static TheoryData<string[]?, HttpStatusCode[]> PlanogramEditScopeTestData()
+{
+    return new TheoryData<string[]?, HttpStatusCode[]>
+    {
+        // 401 Unauthorized
+        { null, [HttpStatusCode.Unauthorized] },
+
+        // 403 Forbidden
+        // No user scopes
+        { [], [HttpStatusCode.Forbidden] },
+        // Has view scope only (not sufficient for edit operations)
+        { [Scope.Planogram.PlanogramView], [HttpStatusCode.Forbidden] },
+        // Has other scopes
+        { [Scope.Administration.AccountSettingsView], [HttpStatusCode.Forbidden] },
+
+        // Authorized cases - Has required PlanogramEdit scope
+        { [Scope.Planogram.PlanogramEdit], AuthorizationTestHelper.AuthorizedStatusCodes },
+        { [Scope.Planogram.PlanogramView, Scope.Planogram.PlanogramEdit], AuthorizationTestHelper.AuthorizedStatusCodes },
     };
 }
 
 [Theory]
-[MemberData(nameof(ScopeOnlyTestData))]
-public async Task Get_Request(string[]? userScopes, HttpStatusCode[] expectedStatusCodes)
+[MemberData(nameof(PlanogramSharedAccessScopeTestData))]
+public async Task GetYourEndpoint_Request(string[]? userScopes, HttpStatusCode[] expectedStatusCodes)
 {
-    var client = factory.CreateClient();
+    // Arrange
+    var client = _factory.CreateClient();
     if (userScopes is not null)
     {
         var jwtToken = JwtTokenHelper.CustomJwtToken("", userScopes);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", jwtToken);
     }
 
-    var response = await client.GetAsync(endpoint);
+    // Act
+    var response = await client.GetAsync("your-get-endpoint-url");
+
+    // Assert
     Assert.Contains(response.StatusCode, expectedStatusCodes);
 }
+
+[Theory]
+[MemberData(nameof(PlanogramEditScopeTestData))]
+public async Task PostYourEndpoint_Request(string[]? userScopes, HttpStatusCode[] expectedStatusCodes)
+{
+    // Arrange
+    var client = _factory.CreateClient();
+    if (userScopes is not null)
+    {
+        var jwtToken = JwtTokenHelper.CustomJwtToken("", userScopes);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", jwtToken);
+    }
+
+    // Act
+    var response = await client.PostAsync("your-post-endpoint-url", new StringContent("your-request-body", Encoding.UTF8, "application/json"));
+
+    // Assert
+    Assert.Contains(response.StatusCode, expectedStatusCodes);
+}
+
+#endregion
 ```
 
 #### Location-Based Endpoints
-For endpoints that implement location-based authorization:
+For endpoints that implement location-based authorization and accept locationCode parameters:
 
 ```csharp
-// Use full TheoryData structure with location claims
-public static TheoryData<string[]?, string[]?, string[], HttpStatusCode[]> LocationBasedTestData()
+#region Location-Based Authorization Tests for withChanges Endpoint
+
+// UserLocationCodesClaims, UserScopes, LocationCodesRequested, ExpectedStatusCodes
+public static TheoryData<string[]?, string[]?, string[], HttpStatusCode[]> PlanogramSharedAccessScopeTestData()
 {
-    // UserLocationCodesClaims, UserScopes, LocationCodesRequested, ExpectedStatusCodes
     return new TheoryData<string[]?, string[]?, string[], HttpStatusCode[]>
     {
         // 401 Unauthorized
-        { null, null, ["001"], [HttpStatusCode.Unauthorized] },
+        { null, null, ["001", "002"], [HttpStatusCode.Unauthorized] },
 
-        // 403 Forbidden cases
-        { [], [], ["001"], [HttpStatusCode.Forbidden] }, // No scope, no location
-        { [""], [RequiredScope], ["001"], [HttpStatusCode.Forbidden] }, // Scope but no location
-        { ["001"], [RequiredScope], ["002"], [HttpStatusCode.Forbidden] }, // Wrong location
+        // 403 Forbidden
+        // No user scopes & no location codes claim
+        { [], [], ["001", "002"], [HttpStatusCode.Forbidden] },
+        // Has PlanogramSharedAccess scope only
+        { [""], [Scope.Planogram.PlanogramEdit], ["001", "002"], [HttpStatusCode.Forbidden] },
+        { [""], [Scope.Planogram.PlanogramView], ["001", "002"], [HttpStatusCode.Forbidden] },
+        { [""], [Scope.Planogram.PlanogramEdit, Scope.Planogram.PlanogramView], ["001", "002"], [HttpStatusCode.Forbidden] },
+        // Has location codes claim only
+        { ["*"], [], ["001", "002"], [HttpStatusCode.Forbidden] },
+        { ["001", "002"], [], ["001", "002"], [HttpStatusCode.Forbidden] },
+        // Has PlanogramSharedAccess scope & location codes but mismatched location codes
+        { ["001"], [Scope.Planogram.PlanogramEdit, Scope.Planogram.PlanogramView], ["002", "001"], [HttpStatusCode.Forbidden] },
+        { ["001"], [Scope.Planogram.PlanogramEdit, Scope.Planogram.PlanogramView], ["002", "003"], [HttpStatusCode.Forbidden] },
 
         // Authorized cases
-        { ["*"], [RequiredScope], ["001"], AuthorizationTestHelper.AuthorizedStatusCodes },
-        { ["001", "002"], [RequiredScope], ["001"], AuthorizationTestHelper.AuthorizedStatusCodes },
+        { ["*"], [Scope.Planogram.PlanogramView], ["001", "002"], AuthorizationTestHelper.AuthorizedStatusCodes },
+        { ["*"], [Scope.Planogram.PlanogramEdit], ["001", "002"], AuthorizationTestHelper.AuthorizedStatusCodes },
+        { ["001", "002"], [Scope.Planogram.PlanogramView, Scope.Planogram.PlanogramEdit], ["001", "002"], AuthorizationTestHelper.AuthorizedStatusCodes },
     };
 }
 
 [Theory]
-[MemberData(nameof(LocationBasedTestData))]
-public async Task GetLocation_Request(string[]? userLocationCodesClaims, string[]? userScopes, string[] locationCodesRequested, HttpStatusCode[] expectedStatusCodes)
+[MemberData(nameof(PlanogramSharedAccessScopeTestData))]
+public async Task GetYourLocationEndpoint_StoreOtgPath_LocationBasedAuthorization(string[]? userLocationCodesClaims, string[]? userScopes, string[] locationCodesRequested, HttpStatusCode[] expectedStatusCodes)
 {
-    var client = factory.CreateClient();
+    // Arrange
+    var client = _factory.CreateClient();
     if (userLocationCodesClaims is not null && userScopes is not null)
     {
         var jwtToken = JwtTokenHelper.CustomJwtToken(string.Join(",", userLocationCodesClaims), userScopes);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", jwtToken);
     }
 
-    var response = await client.GetAsync($"endpoint/{locationCodesRequested[0]}");
+    var url = $"{StoreOtgPath}/withChanges/123e4567-e89b-12d3-a456-426614174000/123e4567-e89b-12d3-a456-426614174001?locationCode={locationCodesRequested[0]}&categoryCode=TEST";
+
+    // Act
+    var response = await client.GetAsync(url);
+
+    // Assert
     Assert.Contains(response.StatusCode, expectedStatusCodes);
 }
+
+#endregion
 ```
 
 ### 3.3: Verify JWT Token Helper
@@ -561,7 +650,14 @@ If after analyzing the controller you determine that no changes are needed, repo
    Result: No changes needed.
    ```
 
-2. **Controller already has appropriate scope-based authorization**:
+2. **Individual endpoints are shared between teams**:
+   ```
+   Analysis: While the controller is team-specific, the GetSomething endpoint serves both teams
+   through shared routing or accessibility. Modifying this endpoint would break functionality for one team.
+   Result: No changes needed for shared endpoints.
+   ```
+
+3. **Controller already has appropriate scope-based authorization**:
    ```
    Analysis: FixtureLabelController already has proper authorization:
    - [Authorize(Policy = Scope.Planogram.PlanogramEdit)]
@@ -570,7 +666,7 @@ If after analyzing the controller you determine that no changes are needed, repo
    Result: No changes needed.
    ```
 
-3. **Controller already has location-based authorization**:
+4. **Controller already has location-based authorization**:
    ```
    Analysis: AuditLogsController already has location-based authorization implemented.
    Result: No changes needed.
