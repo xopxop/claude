@@ -7,7 +7,14 @@ Implement location-based JWT authorization for a specific controller in an ASP.N
 ## Usage
 
 ```bash
-opencode implement-location-based-authorization <ControllerName>
+/implement-location-based-authorization <ControllerName>
+```
+
+**Examples**:
+```bash
+/implement-location-based-authorization PlanogramFeedbackPermissionsController
+/implement-location-based-authorization AuditLogsController
+/implement-location-based-authorization PlanogramController
 ```
 
 ## Prerequisites
@@ -217,7 +224,7 @@ public class AuditLogRequestBodyAuthorizationHandler(IHttpContextAccessor httpCo
 
         if (string.IsNullOrWhiteSpace(requestBody))
         {
-            return ["*"];
+            return new HashSet<string>(); // Security: Return empty set instead of wildcard
         }
 
         var auditLogRequest = JsonSerializer.Deserialize<AuditLogRequest>(requestBody, new JsonSerializerOptions
@@ -230,7 +237,7 @@ public class AuditLogRequestBodyAuthorizationHandler(IHttpContextAccessor httpCo
             return [auditLogRequest.LocationCode];
         }
 
-        return ["*"];
+        return new HashSet<string>(); // Security: Return empty set instead of wildcard
     }
 }
 ```
@@ -371,16 +378,112 @@ public class YourControllerAuthorizationTests(ApiFactory factory) : IClassFixtur
 }
 ```
 
-### 3.2: Verify JWT Token Helper
+### 3.2: Critical Testing Guidelines
+
+**IMPORTANT**: Use different test data structures based on endpoint authorization type:
+
+#### Scope-Only Endpoints (No Location Authorization)
+For endpoints that only require scopes (e.g., GET all resources):
+
+```csharp
+// Use simplified TheoryData structure
+public static TheoryData<string[]?, HttpStatusCode[]> ScopeOnlyTestData()
+{
+    return new TheoryData<string[]?, HttpStatusCode[]>
+    {
+        { null, [HttpStatusCode.Unauthorized] }, // No token
+        { [], [HttpStatusCode.Forbidden] },      // No scopes
+        { [RequiredScope], AuthorizationTestHelper.AuthorizedStatusCodes }, // Has required scope
+    };
+}
+
+[Theory]
+[MemberData(nameof(ScopeOnlyTestData))]
+public async Task Get_Request(string[]? userScopes, HttpStatusCode[] expectedStatusCodes)
+{
+    var client = factory.CreateClient();
+    if (userScopes is not null)
+    {
+        var jwtToken = JwtTokenHelper.CustomJwtToken("", userScopes);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", jwtToken);
+    }
+
+    var response = await client.GetAsync(endpoint);
+    Assert.Contains(response.StatusCode, expectedStatusCodes);
+}
+```
+
+#### Location-Based Endpoints
+For endpoints that implement location-based authorization:
+
+```csharp
+// Use full TheoryData structure with location claims
+public static TheoryData<string[]?, string[]?, string[], HttpStatusCode[]> LocationBasedTestData()
+{
+    // UserLocationCodesClaims, UserScopes, LocationCodesRequested, ExpectedStatusCodes
+    return new TheoryData<string[]?, string[]?, string[], HttpStatusCode[]>
+    {
+        // 401 Unauthorized
+        { null, null, ["001"], [HttpStatusCode.Unauthorized] },
+
+        // 403 Forbidden cases
+        { [], [], ["001"], [HttpStatusCode.Forbidden] }, // No scope, no location
+        { [""], [RequiredScope], ["001"], [HttpStatusCode.Forbidden] }, // Scope but no location
+        { ["001"], [RequiredScope], ["002"], [HttpStatusCode.Forbidden] }, // Wrong location
+
+        // Authorized cases
+        { ["*"], [RequiredScope], ["001"], AuthorizationTestHelper.AuthorizedStatusCodes },
+        { ["001", "002"], [RequiredScope], ["001"], AuthorizationTestHelper.AuthorizedStatusCodes },
+    };
+}
+
+[Theory]
+[MemberData(nameof(LocationBasedTestData))]
+public async Task GetLocation_Request(string[]? userLocationCodesClaims, string[]? userScopes, string[] locationCodesRequested, HttpStatusCode[] expectedStatusCodes)
+{
+    var client = factory.CreateClient();
+    if (userLocationCodesClaims is not null && userScopes is not null)
+    {
+        var jwtToken = JwtTokenHelper.CustomJwtToken(string.Join(",", userLocationCodesClaims), userScopes);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", jwtToken);
+    }
+
+    var response = await client.GetAsync($"endpoint/{locationCodesRequested[0]}");
+    Assert.Contains(response.StatusCode, expectedStatusCodes);
+}
+```
+
+### 3.3: Verify JWT Token Helper
 
 Ensure your existing `JwtTokenHelper.cs` includes the `CustomJwtToken` method. This method is essential for location-based authorization testing and should already exist in the helpers.
 
-## Step 4: Common Pitfalls to Avoid
+## Step 4: Critical Rules
+
+**DO NOT**:
+- Modify existing test files from other controllers
+- Create new test files - update existing controller test file
+- Modify `JwtTokenHelper.cs` - use existing `CustomJwtToken` method
+- Modify `AuditLogAuthorizationHandlers.cs` - keep original content
+- Use location-based test data structure for scope-only endpoints
+
+**DO**:
+- Follow exact same structure as `AuditLogsControllerAuthorizationTests.cs`
+- Use appropriate test data structure based on endpoint authorization type
+- Update only the target controller's test file
+- Inherit from `AuthorizeControllerBase` (not `ControllerBase`)
+
+**Files to Never Modify**:
+- `JwtTokenHelper.cs` - Use existing `CustomJwtToken(locationCode, scopes)` method
+- `AuditLogAuthorizationHandlers.cs` - Keep original content with both handlers
+- Other controller test files - Only update the target controller's test file
+
+## Step 5: Common Pitfalls to Avoid
 
 1. **Wrong base class inheritance**: Always use `AuthorizeControllerBase`, never `ControllerBase` or `Controller`
 2. **Missing location parameters**: Endpoints requiring location authorization must accept location parameters
 3. **Incorrect parameter naming**: Use `locationCode` unless external dependencies prevent it
 4. **Missing using statements**: Ensure all required namespaces are imported
+5. **Wrong test data structure**: Use scope-only structure for endpoints without location authorization
 
 ## Step 5: Validation Checklist
 
